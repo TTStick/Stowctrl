@@ -1,0 +1,12 @@
+.DS_Store
+# iOS
+ios/build/
+ios/DerivedData/
+xcuserdata/
+*.xcuserstate
+# server
+server/.env
+server/data/
+__pycache__/
+*.pyc
+.pytest_cache/

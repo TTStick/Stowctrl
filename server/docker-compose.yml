@@ -1,0 +1,21 @@
+services:
+  nook:
+    build:
+      context: .
+      args:
+        # true = also install rembg so the server can cut out photos when
+        # a device can't do it on-device.
+        WITH_CUTOUT: "${WITH_CUTOUT:-false}"
+    image: nook-server:latest
+    container_name: nook-server
+    restart: unless-stopped
+    ports:
+      - "${NOOK_PORT:-5858}:5858"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - nook-data:/data
+
+volumes:
+  nook-data:

@@ -1,0 +1,119 @@
+# XcodeGen spec — run `xcodegen generate` to (re)create Nook.xcodeproj.
+name: Nook
+options:
+  bundleIdPrefix: com.wanwu
+  deploymentTarget:
+    iOS: "18.0"
+  developmentLanguage: zh-Hans
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    ALWAYS_SEARCH_USER_PATHS: "NO"
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    TARGETED_DEVICE_FAMILY: "1"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Spelled out because some xcodegen installs ship without setting presets.
+    SDKROOT: iphoneos
+    SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
+    LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @loader_path/Frameworks"
+    CLANG_ENABLE_MODULES: "YES"
+    ENABLE_USER_SCRIPT_SANDBOXING: "YES"
+  configs:
+    Debug:
+      ENABLE_TESTABILITY: "YES"
+      SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+      GCC_OPTIMIZATION_LEVEL: "0"
+      DEBUG_INFORMATION_FORMAT: dwarf
+      ONLY_ACTIVE_ARCH: "YES"
+      MTL_ENABLE_DEBUG_INFO: INCLUDE_SOURCE
+    Release:
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
+      SWIFT_COMPILATION_MODE: wholemodule
+      DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+      VALIDATE_PRODUCT: "YES"
+
+targets:
+  Nook:
+    type: application
+    platform: iOS
+    sources:
+      - path: Nook
+    info:
+      path: Nook/Info.plist
+      properties:
+        CFBundleDisplayName: 万物收纳
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleDevelopmentRegion: zh-Hans
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen:
+          UIColorName: AccentColor
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSCameraUsageDescription: 拍摄物品照片，照片只保存在你的设备和你自己的同步服务器上。
+        NSPhotoLibraryUsageDescription: 从相册选择物品照片。
+        NSLocalNetworkUsageDescription: 连接局域网里的 Home Assistant 和你自己部署的同步服务器。
+        NSAppTransportSecurity:
+          # Self-hosted servers and Home Assistant usually live on plain
+          # http inside the LAN.
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.wanwu.nook
+        PRODUCT_NAME: Nook
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        INFOPLIST_FILE: Nook/Info.plist
+        GENERATE_INFOPLIST_FILE: "NO"
+        ENABLE_PREVIEWS: "YES"
+
+  NookTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: NookTests
+    dependencies:
+      - target: Nook
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.wanwu.nook.tests
+        PRODUCT_NAME: NookTests
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Nook.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Nook
+        BUNDLE_LOADER: $(TEST_HOST)
+
+  NookUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: NookUITests
+    dependencies:
+      - target: Nook
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.wanwu.nook.uitests
+        PRODUCT_NAME: NookUITests
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_TARGET_NAME: Nook
+
+schemes:
+  Nook:
+    build:
+      targets:
+        Nook: all
+        NookTests: [test]
+        NookUITests: [test]
+    test:
+      targets:
+        - NookTests
+        - NookUITests

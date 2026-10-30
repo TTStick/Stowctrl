@@ -99,6 +99,7 @@ struct ItemCollection: View {
                     }
                 }
                 .listStyle(.plain)
+                .readableWidth(900)
             }
         }
         .safeAreaInset(edge: .bottom) {

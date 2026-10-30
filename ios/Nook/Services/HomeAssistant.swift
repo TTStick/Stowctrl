@@ -206,9 +206,9 @@ final class HomeAssistantManager {
     var isConfigured: Bool { client != nil }
 
     var client: HAClient? {
-        let s = store.settings
-        guard !s.haToken.trimmed.isEmpty, let url = APIClient.normalize(s.haURL) else { return nil }
-        return HAClient(baseURL: url, token: s.haToken.trimmed)
+        let token = store.haToken.trimmed
+        guard !token.isEmpty, let url = APIClient.normalize(store.settings.haURL) else { return nil }
+        return HAClient(baseURL: url, token: token)
     }
 
     var sortedStates: [HAState] {

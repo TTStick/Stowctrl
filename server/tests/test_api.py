@@ -19,6 +19,7 @@ FAKE_SVG = (
     "</svg>"
 )
 captured: dict = {}
+INVITE = "family-invite-2026"
 
 
 class _FakeAnthropic(BaseHTTPRequestHandler):
@@ -48,18 +49,25 @@ _server = HTTPServer(("127.0.0.1", 0), _FakeAnthropic)
 threading.Thread(target=_server.serve_forever, daemon=True).start()
 
 os.environ["NOOK_DATA_DIR"] = tempfile.mkdtemp()
+os.environ["NOOK_INVITE_CODE"] = INVITE
+os.environ["NOOK_MAX_USERS"] = "100"
+os.environ["NOOK_USER_QUOTA_MB"] = "2"
 os.environ["ANTHROPIC_API_KEY"] = "test-key"
 os.environ["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{_server.server_port}"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from app import auth, config, main  # noqa: E402
 from app.main import app  # noqa: E402
+from app.security import RateLimiter  # noqa: E402
 
 client = TestClient(app)
+JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00"
 
 
 def register(name: str, password: str = "secret123") -> dict:
-    r = client.post("/api/auth/register", json={"username": name, "password": password, "deviceName": "t"})
+    r = client.post("/api/auth/register", json={"username": name, "password": password, "deviceName": "t",
+                                                "inviteCode": INVITE})
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
@@ -68,14 +76,16 @@ def test_info_and_health():
     assert client.get("/api/health").json() == {"ok": True}
     info = client.get("/api/info").json()
     assert info["features"]["icons"] is True
-    assert info["registrationOpen"] is True
+    assert info["registrationOpen"] is True and info["registration"] == "code"
+    assert info["passwordMin"] == 8
 
 
 def test_register_login_errors():
     register("alice")
-    assert client.post("/api/auth/register", json={"username": "alice", "password": "secret123"}).status_code == 409
-    assert client.post("/api/auth/register", json={"username": "a", "password": "secret123"}).status_code == 400
-    assert client.post("/api/auth/register", json={"username": "bobby", "password": "123"}).status_code == 400
+    reg = {"password": "secret123", "inviteCode": INVITE}
+    assert client.post("/api/auth/register", json={**reg, "username": "alice"}).status_code == 409
+    assert client.post("/api/auth/register", json={**reg, "username": "a"}).status_code == 400
+    assert client.post("/api/auth/register", json={**reg, "username": "bobby", "password": "1234567"}).status_code == 400
     assert client.post("/api/auth/login", json={"username": "alice", "password": "wrong"}).status_code == 401
     ok = client.post("/api/auth/login", json={"username": "ALICE", "password": "secret123"})
     assert ok.status_code == 200
@@ -175,6 +185,7 @@ def test_password_change_and_account_deletion():
     second = client.post("/api/auth/login", json={"username": "leaver", "password": "secret123"}).json()
     h2 = {"Authorization": f"Bearer {second['token']}"}
     assert client.post("/api/auth/password", headers=h, json={"oldPassword": "bad", "newPassword": "newsecret"}).status_code == 401
+    assert client.post("/api/auth/password", headers=h, json={"oldPassword": "secret123", "newPassword": "short"}).status_code == 400
     assert client.post("/api/auth/password", headers=h, json={"oldPassword": "secret123", "newPassword": "newsecret"}).status_code == 200
     assert client.get("/api/me", headers=h2).status_code == 401  # other device signed out
     assert client.get("/api/me", headers=h).status_code == 200
@@ -183,6 +194,144 @@ def test_password_change_and_account_deletion():
     assert client.post("/api/me/delete", headers=h, json={"password": "newsecret"}).status_code == 200
     assert client.get("/api/me", headers=h).status_code == 401
     assert client.post("/api/auth/login", json={"username": "leaver", "password": "newsecret"}).status_code == 401
+
+
+# ---------------------------------------------------------------- hardening
+
+def _forget_failures():
+    for limiter in (main.fails_account_ip, main.fails_ip, main.fails_account, main.code_fails):
+        limiter._hits.clear()
+
+
+def test_no_docs_and_security_headers():
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert client.get(path).status_code == 404
+    r = client.get("/api/info")
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert r.headers["x-frame-options"] == "DENY"
+    assert "sandbox" in r.headers["content-security-policy"]
+    assert r.headers["cache-control"] == "no-store"
+    assert "strict-transport-security" not in r.headers  # plain HTTP here
+
+
+def test_registration_needs_the_invite_code():
+    body = {"username": "gatecrasher", "password": "secret123"}
+    r = client.post("/api/auth/register", json=body)
+    assert r.status_code == 403 and "注册码" in r.json()["detail"]
+    for _ in range(config.CODE_FAILS_PER_IP - 1):
+        assert client.post("/api/auth/register", json={**body, "inviteCode": "guess"}).status_code == 403
+    # Too many wrong codes from this address: even the right one waits.
+    r = client.post("/api/auth/register", json={**body, "inviteCode": INVITE})
+    assert r.status_code == 429 and "retry-after" in r.headers
+    _forget_failures()
+    assert client.post("/api/auth/register", json={**body, "inviteCode": INVITE}).status_code == 200
+
+
+def test_login_throttling():
+    register("victim")
+    wrong = {"username": "victim", "password": "wrong-password"}
+    for _ in range(config.LOGIN_FAILS_PER_ACCOUNT_IP):
+        assert client.post("/api/auth/login", json=wrong).status_code == 401
+    # Locked for this account from this address, even with the right password.
+    r = client.post("/api/auth/login", json={"username": "VICTIM", "password": "secret123"})
+    assert r.status_code == 429
+    _forget_failures()
+    # Spraying many usernames from one address trips the per-address limit.
+    for n in range(config.LOGIN_FAILS_PER_IP):
+        client.post("/api/auth/login", json={"username": f"nobody{n}", "password": "x"})
+    assert client.post("/api/auth/login", json={"username": "victim", "password": "secret123"}).status_code == 429
+    _forget_failures()
+    assert client.post("/api/auth/login", json={"username": "victim", "password": "secret123"}).status_code == 200
+
+
+def test_unknown_user_still_hashes(monkeypatch):
+    seen = []
+    real = auth.verify_password
+    monkeypatch.setattr(auth, "verify_password", lambda p, h: seen.append(h) or real(p, h))
+    assert client.post("/api/auth/login", json={"username": "ghost", "password": "secret123"}).status_code == 401
+    assert seen == [auth.DUMMY_HASH]
+    _forget_failures()
+
+
+def test_password_rechecks_are_throttled(monkeypatch):
+    h = register("guarded")
+    monkeypatch.setattr(main, "fails_account", RateLimiter(2, 3600))
+    bad = {"password": "nope-nope"}
+    assert client.post("/api/me/delete", headers=h, json=bad).status_code == 401
+    assert client.post("/api/me/delete", headers=h, json=bad).status_code == 401
+    assert client.post("/api/me/delete", headers=h, json={"password": "secret123"}).status_code == 429
+    assert client.get("/api/me", headers=h).status_code == 200
+
+
+def test_request_body_limits(monkeypatch):
+    h = register("bulky")
+    big = {"username": "x" * 70_000, "password": "y"}
+    assert client.post("/api/auth/login", json=big).status_code == 413
+    monkeypatch.setattr(config, "MAX_SYNC_BYTES", 2000)
+    changes = [{"entity": "item", "id": f"b{n}", "updatedAt": 1, "data": {"pad": "z" * 100}} for n in range(30)]
+    assert client.post("/api/sync", headers=h, json={"changes": changes}).status_code == 413
+    # A streamed body without Content-Length is cut off the same way.
+    stream = iter([b'{"changes": [', b" " * 3000, b"]}"])
+    r = client.post("/api/sync", headers={**h, "Content-Type": "application/json"}, content=stream)
+    assert r.status_code == 413
+    assert client.post("/api/sync", headers=h, json={"changes": [{"entity": "room", "id": "t", "updatedAt": 2**60}]}).status_code == 400
+
+
+def test_uploads_are_sniffed():
+    h = register("uploader")
+    html = b"<html><script>alert(1)</script></html>"
+    r = client.put("/api/files/evil.png", headers={**h, "Content-Type": "image/png"}, content=html)
+    assert r.status_code == 415
+    assert client.get("/api/files/evil.png", headers=h).status_code == 404
+    # Served as what it really is, not what the uploader said.
+    assert client.put("/api/files/photo.png", headers={**h, "Content-Type": "image/png"}, content=JPEG).status_code == 200
+    got = client.get("/api/files/photo.png", headers=h)
+    assert got.headers["content-type"] == "image/jpeg"
+    assert got.headers["x-content-type-options"] == "nosniff" and "sandbox" in got.headers["content-security-policy"]
+
+
+def test_storage_quota():
+    h = register("hoarder")
+    chunk = JPEG + b"\0" * (1_200_000)
+    assert client.put("/api/files/one.jpg", headers={**h, "Content-Type": "image/jpeg"}, content=chunk).status_code == 200
+    r = client.put("/api/files/two.jpg", headers={**h, "Content-Type": "image/jpeg"}, content=chunk)
+    assert r.status_code == 413 and "存储空间" in r.json()["detail"]
+    # Replacing a file only counts the new size.
+    assert client.put("/api/files/one.jpg", headers={**h, "Content-Type": "image/jpeg"}, content=chunk).status_code == 200
+    # Records count too, and an over-quota sync is rolled back entirely.
+    changes = [{"entity": "item", "id": f"q{n}", "updatedAt": 5, "data": {"pad": "z" * 100_000}} for n in range(10)]
+    assert client.post("/api/sync", headers=h, json={"changes": changes}).status_code == 413
+    assert client.post("/api/sync", headers=h, json={"cursor": 0}).json()["changes"] == []
+    # Tombstones are tiny and still go through.
+    tomb = [{"entity": "item", "id": "q0", "updatedAt": 6, "deleted": True}]
+    assert client.post("/api/sync", headers=h, json={"changes": tomb}).status_code == 200
+
+
+def test_idle_sessions_expire_and_are_capped():
+    h = register("sleeper")
+    token_hash = auth.hash_token(h["Authorization"][7:])
+    main.db.execute("UPDATE sessions SET last_seen = 0 WHERE token_hash = ?", (token_hash,))
+    r = client.get("/api/me", headers=h)
+    assert r.status_code == 401
+    assert main.db.one("SELECT 1 FROM sessions WHERE token_hash = ?", (token_hash,)) is None
+    first = client.post("/api/auth/login", json={"username": "sleeper", "password": "secret123"}).json()["token"]
+    main.db.execute("UPDATE sessions SET last_seen = last_seen - 1000 WHERE token_hash = ?", (auth.hash_token(first),))
+    for _ in range(config.MAX_SESSIONS_PER_USER):
+        assert client.post("/api/auth/login", json={"username": "sleeper", "password": "secret123"}).status_code == 200
+    count = main.db.one("SELECT COUNT(*) FROM sessions s JOIN users u ON u.id = s.user_id WHERE u.username = 'sleeper'")[0]
+    assert count == config.MAX_SESSIONS_PER_USER
+    assert client.get("/api/me", headers={"Authorization": f"Bearer {first}"}).status_code == 401
+
+
+def test_rate_limiter_memory_is_bounded(monkeypatch):
+    monkeypatch.setattr(RateLimiter, "MAX_KEYS", 100)
+    limiter = RateLimiter(3, 60)
+    for n in range(1000):
+        limiter.hit(f"k{n}")
+    assert len(limiter._hits) <= 100
+    for _ in range(5):
+        limiter.hit("busy")
+    assert len(limiter._hits["busy"]) == 3 and not limiter.allowed("busy")
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -174,6 +174,7 @@ class FlowTest {
         click("account.registerTab")
         tag("account.username").performTextInput(user)
         tag("account.password").performTextInput("secret123")
+        tag("account.invite").performTextInput("nook-test-invite")
         click("account.submit")
         waitTag("settings.account", 20_000)
         waitTag("settings.synced", 20_000)

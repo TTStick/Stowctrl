@@ -7,6 +7,7 @@ WITH_CUTOUT=true, which installs rembg and onnxruntime.
 from __future__ import annotations
 
 import importlib.util
+import io
 import threading
 
 from . import config
@@ -20,7 +21,13 @@ def available() -> bool:
 
 
 def remove_background(data: bytes) -> bytes:
+    from PIL import Image
     from rembg import new_session, remove
+
+    # Opening only reads the header: refuse decompression bombs up front.
+    with Image.open(io.BytesIO(data)) as probe:
+        if probe.width * probe.height > config.MAX_IMAGE_PIXELS:
+            raise ValueError("image too large")
 
     global _session
     with _lock:

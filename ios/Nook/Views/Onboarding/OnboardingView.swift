@@ -53,6 +53,19 @@ struct OnboardingView: View {
     }
 
     private var welcome: some View {
+        // Scrolls when short (iPad mini in landscape); never wider than a
+        // phone column on a big screen.
+        GeometryReader { geo in
+            ScrollView {
+                welcomeContent
+                    .frame(maxWidth: 520)
+                    .frame(maxWidth: .infinity, minHeight: geo.size.height)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+        }
+    }
+
+    private var welcomeContent: some View {
         VStack(spacing: 28) {
             Spacer()
             WelcomeArt()
@@ -181,6 +194,7 @@ struct HomeWizard: View {
                 .accessibilityIdentifier("wizard.create")
             }
         }
+        .readableWidth()
         .navigationTitle("搭建你的家")
     }
 }

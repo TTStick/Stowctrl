@@ -72,11 +72,11 @@ class SyncManager(
         return ApiClient(url).info()
     }
 
-    suspend fun signIn(server: String, user: String, password: String, register: Boolean): LoginOutcome {
+    suspend fun signIn(server: String, user: String, password: String, register: Boolean, inviteCode: String = ""): LoginOutcome {
         val url = ApiClient.normalize(server) ?: throw ApiException("服务器地址不正确")
         val api = ApiClient(url)
         val info = api.info()
-        val auth = api.login(user.trim(), password, Build.MODEL ?: "Android", register)
+        val auth = api.login(user.trim(), password, Build.MODEL ?: "Android", register, inviteCode)
         serverUrl = url
         token = auth.token
         updateOffline(false)

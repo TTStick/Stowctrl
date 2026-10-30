@@ -217,7 +217,9 @@ final class LiveSyncTests: XCTestCase {
         do { _ = try await APIClient(baseURL: url).info() } catch { throw XCTSkip("no server at \(base)") }
 
         let user = "t\(UUID().uuidString.prefix(8).lowercased())"
-        let auth = try await APIClient(baseURL: url).login(username: user, password: "secret123", device: "test", register: true)
+        let invite = ProcessInfo.processInfo.environment["NOOK_TEST_INVITE"] ?? "nook-test-invite"
+        let auth = try await APIClient(baseURL: url).login(username: user, password: "secret123", device: "test", register: true,
+                                                           inviteCode: invite)
         let api = APIClient(baseURL: url, token: auth.token)
 
         func dirs() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString) }
@@ -366,6 +368,30 @@ final class OfflineTests: XCTestCase {
         HomeStore(directory: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
     }
 
+    override func tearDown() {
+        Keychain.set(nil, for: HomeStore.haTokenAccount)
+        super.tearDown()
+    }
+
+    /// Older versions synced the HA token; it moves into the Keychain and the
+    /// settings go back to the server without it.
+    func testLegacyHATokenLeavesTheServer() throws {
+        let store = tempStore()
+        store.haToken = ""
+        let id = HomeSettings.singletonId.uuidString
+        let legacy: JSONValue = .object(["id": .string(id), "homeName": .string("旧家"), "haURL": .string("http://ha.local:8123"),
+                                         "haToken": .string("old-synced-token"), "updatedAt": .number(1000)])
+        store.applyRemote([SyncChange(entity: HomeSettings.entityName, id: id, updatedAt: 1000, deleted: false, data: legacy)])
+        XCTAssertEqual(store.haToken, "old-synced-token")
+        XCTAssertEqual(Keychain.get(HomeStore.haTokenAccount), "old-synced-token")
+        XCTAssertEqual(store.settings.haURL, "http://ha.local:8123")
+        let out = try XCTUnwrap(store.outgoingChanges(limit: 10).first { $0.change.entity == HomeSettings.entityName })
+        XCTAssertGreaterThan(out.change.updatedAt, 1000, "re-uploaded so it overwrites the server's copy")
+        let sent = String(data: try JSONEncoder().encode(out.change.data), encoding: .utf8)!
+        XCTAssertFalse(sent.contains("old-synced-token"))
+        XCTAssertTrue(sent.contains("ha.local"))
+    }
+
     private func sampleHome(_ store: HomeStore, itemName: String) throws -> Item {
         store.buildHome(name: "离线之家", rooms: [(.kitchen, 1)], withFurniture: true)
         let fridge = try XCTUnwrap(store.furniture.values.first { $0.kind == "fridge" })
@@ -381,8 +407,8 @@ final class OfflineTests: XCTestCase {
         store.save(item)
         var s = store.settings
         s.haURL = "http://ha.local:8123"
-        s.haToken = "secret-ha-token"
         store.saveSettings(s)
+        store.haToken = "secret-ha-token"
         return store.items[item.id]!
     }
 
@@ -403,7 +429,9 @@ final class OfflineTests: XCTestCase {
         XCTAssertEqual(b.files.data(restored.photoId!), a.files.data(item.photoId!))
         XCTAssertNotNil(b.icons[UUID(uuidString: restored.icon!.value)!])
         XCTAssertEqual(b.settings.homeName, "离线之家")
-        XCTAssertEqual(b.settings.haToken, "", "backups never carry the HA token")
+        let manifest = String(data: try JSONEncoder().encode(loaded.manifest.records), encoding: .utf8)!
+        XCTAssertFalse(manifest.contains("secret-ha-token"), "backups never carry the HA token")
+        XCTAssertEqual(b.settings.haURL, "http://ha.local:8123")
         XCTAssertTrue(b.didOnboard)
 
         // A newer local edit survives a merge, but not a replace.

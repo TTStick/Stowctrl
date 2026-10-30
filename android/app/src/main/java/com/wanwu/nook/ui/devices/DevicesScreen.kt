@@ -128,7 +128,9 @@ fun DevicesScreen() {
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             if (!ha.isConfigured) {
-                EmptyState("连接 Home Assistant", "填写内网 HA 地址和长期访问令牌后，可以把灯、空调、洗衣机等设备映射到家具上，直接在这里控制。",
+                EmptyState("连接 Home Assistant", if (store.settings.haURL.isEmpty())
+                        "填写内网 HA 地址和长期访问令牌后，可以把灯、空调、洗衣机等设备映射到家具上，直接在这里控制。"
+                    else "地址已从你的其他设备同步过来。令牌只保存在各自的设备上，在这台设备上填写一次即可。",
                     Icons.Outlined.Home) { Button({ router.open(Route.HASettings) }, Modifier.testTag("ha.setup")) { Text("开始设置") } }
             } else {
                 val mapped = store.furniture.values.filter { it.haEntities.isNotEmpty() }

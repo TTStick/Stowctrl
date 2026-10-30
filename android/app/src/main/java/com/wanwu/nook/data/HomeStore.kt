@@ -40,6 +40,10 @@ class HomeStore(private val dir: File, private val scope: CoroutineScope? = null
     val icons = mutableStateMapOf<String, CustomIcon>()
     var settings by mutableStateOf(HomeSettings())
         private set
+    /** This device's Home Assistant token: kept encrypted by the app, never synced or backed up. */
+    var haToken by mutableStateOf("")
+        private set
+    private var persistHAToken: (String) -> Unit = {}
     var didOnboard by mutableStateOf(false)
         private set
     var pendingCount by mutableIntStateOf(0)
@@ -101,6 +105,30 @@ class HomeStore(private val dir: File, private val scope: CoroutineScope? = null
         didOnboard = snap.didOnboard
         uploads.addAll(snap.pendingUploads)
         pendingCount = pending.size
+        adoptLegacyHAToken()
+    }
+
+    /** Called once by the app with the saved token and how to save a new one. */
+    fun bindHAToken(saved: String?, persist: (String) -> Unit) {
+        persistHAToken = persist
+        if (saved.isNullOrEmpty() && haToken.isNotEmpty()) persist(haToken)  // just adopted from an older version
+        else haToken = saved.orEmpty()
+    }
+
+    fun updateHAToken(token: String) {
+        haToken = token.trim()
+        persistHAToken(haToken)
+    }
+
+    /**
+     * Older versions kept the Home Assistant token in the synced settings.
+     * Keep it on this device and re-upload the settings without it, which
+     * overwrites the copy on the server.
+     */
+    private fun adoptLegacyHAToken() {
+        if (settings.haToken.isEmpty()) return
+        if (haToken.isEmpty()) updateHAToken(settings.haToken)
+        saveSettings(settings.copy(haToken = ""))
     }
 
     private fun snapshotJson(): String = NookJson.encodeToString(Snapshot.serializer(), Snapshot(
@@ -603,6 +631,7 @@ class HomeStore(private val dir: File, private val scope: CoroutineScope? = null
             if (ch.updatedAt > lastTimestamp) lastTimestamp = ch.updatedAt
             changed = true
         }
+        adoptLegacyHAToken()
         if (changed) { pendingCount = pending.size; revision++; scheduleSave() }
     }
 
@@ -664,6 +693,7 @@ class HomeStore(private val dir: File, private val scope: CoroutineScope? = null
     fun wipeLocal() {
         rooms.clear(); furniture.clear(); compartments.clear(); items.clear(); categories.clear(); icons.clear()
         settings = HomeSettings()
+        updateHAToken("")
         pending.clear(); tombstones.clear(); uploads.clear()
         cursor = 0
         didOnboard = false
@@ -677,7 +707,7 @@ class HomeStore(private val dir: File, private val scope: CoroutineScope? = null
 
     // region Backup
 
-    /** Every live record as a sync change. The Home Assistant token is left out. */
+    /** Every live record as a sync change (settings never hold the Home Assistant token). */
     fun backupChanges(): List<SyncChange> {
         val out = mutableListOf<SyncChange>()
         rooms.values.forEach { out += SyncChange(Entities.ROOM, it.id, it.updatedAt, false, NookJson.encodeToJsonElement(Room.serializer(), it)) }
@@ -687,8 +717,7 @@ class HomeStore(private val dir: File, private val scope: CoroutineScope? = null
         icons.values.forEach { out += SyncChange(Entities.ICON, it.id, it.updatedAt, false, NookJson.encodeToJsonElement(CustomIcon.serializer(), it)) }
         items.values.forEach { out += SyncChange(Entities.ITEM, it.id, it.updatedAt, false, NookJson.encodeToJsonElement(Item.serializer(), it)) }
         if (settings.updatedAt > 0) {
-            val s = settings.copy(haToken = "")
-            out += SyncChange(Entities.SETTINGS, s.id, s.updatedAt, false, NookJson.encodeToJsonElement(HomeSettings.serializer(), s))
+            out += SyncChange(Entities.SETTINGS, settings.id, settings.updatedAt, false, NookJson.encodeToJsonElement(HomeSettings.serializer(), settings))
         }
         return out
     }
@@ -709,7 +738,7 @@ class HomeStore(private val dir: File, private val scope: CoroutineScope? = null
             prune(items, Entities.ITEM); prune(compartments, Entities.COMPARTMENT); prune(furniture, Entities.FURNITURE)
             prune(rooms, Entities.ROOM); prune(icons, Entities.ICON); prune(categories, Entities.CATEGORY)
         }
-        val keptHA = settings.haURL to settings.haToken
+        val keptHAURL = settings.haURL
         for (ch in changes) {
             if (ch.deleted) continue
             val data = ch.data ?: continue
@@ -728,7 +757,9 @@ class HomeStore(private val dir: File, private val scope: CoroutineScope? = null
                 Entities.ITEM -> summary.items++
             }
         }
-        if (settings.haToken.isEmpty() && keptHA.second.isNotEmpty()) settings = settings.copy(haURL = keptHA.first, haToken = keptHA.second)
+        // A backup without a Home Assistant address keeps this device's.
+        if (settings.haURL.isEmpty() && keptHAURL.isNotEmpty()) settings = settings.copy(haURL = keptHAURL)
+        adoptLegacyHAToken()
         if (rooms.isNotEmpty()) didOnboard = true
         pendingCount = pending.size
         revision++

@@ -81,7 +81,9 @@ class AppContainer(context: Context) {
     val scope = MainScope()
     private val prefs = context.getSharedPreferences("nook", Context.MODE_PRIVATE)
     private val secrets = SecretStore(context)
-    val store = HomeStore(File(context.filesDir, "nook"), scope)
+    val store = HomeStore(File(context.filesDir, "nook"), scope).apply {
+        bindHAToken(secrets.get("ha.token")) { secrets.put("ha.token", it.ifEmpty { null }) }
+    }
     val sync = SyncManager(store, prefs, secrets, scope)
     val ai = com.wanwu.nook.net.AIService(prefs, secrets)
     val ha = HomeAssistantManager(store, scope)

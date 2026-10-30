@@ -88,6 +88,7 @@ struct SettingsView: View {
                     Text("万物收纳 · 照片和数据只存放在你的设备和你自己的服务器上。")
                 }
             }
+            .readableWidth()
             .navigationTitle("我的")
             .navigationDestination(for: Route.self) { RouteView(route: $0) }
             .sheet(isPresented: $signingIn) { AccountSheet() }
@@ -249,7 +250,12 @@ struct AISettingsView: View {
             }
             if ai.source == .direct {
                 Section("Claude API") {
-                    SecureField(ai.hasKey ? "已保存，输入新的可替换" : "API Key（sk-ant-…）", text: $key)
+                    // Plain field (a SecureField makes iOS offer to save it as a
+                    // website password); the saved key is never shown again.
+                    TextField(ai.hasKey ? "已保存，输入新的可替换" : "API Key（sk-ant-…）", text: $key)
+                        .font(.system(.body, design: .monospaced))
+                        .lineLimit(1)
+                        .privacySensitive()
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .accessibilityIdentifier("ai.key")
@@ -280,6 +286,7 @@ struct AISettingsView: View {
                 }
             }
         }
+        .readableWidth()
         .navigationTitle("AI 绘制图标")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -314,10 +321,18 @@ struct AccountSheet: View {
     @State private var username = ""
     @State private var password = ""
     @State private var register = false
+    @State private var inviteCode = ""
     @State private var working = false
     @State private var error: String?
     @State private var info: ServerInfo?
     @State private var needsMerge = false
+
+    private var passwordMin: Int { info?.passwordMin ?? 8 }
+    private var canSubmit: Bool {
+        guard !working, !server.trimmed.isEmpty, username.trimmed.count >= 3 else { return false }
+        // Accounts made before the 8-character rule can still sign in.
+        return register ? password.count >= passwordMin : !password.isEmpty
+    }
 
     var body: some View {
         NavigationStack {
@@ -336,10 +351,15 @@ struct AccountSheet: View {
                     } else {
                         Button("检测服务器") { Task { await check() } }.disabled(server.trimmed.isEmpty || working)
                     }
+                    if let url = APIClient.normalize(server), APIClient.isUnencryptedPublic(url) {
+                        Label("未加密连接（http）。如果服务器在公网上，密码和数据可能被截获，请改用 https。",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange).font(.footnote)
+                    }
                 } header: {
                     Text("服务器地址")
                 } footer: {
-                    Text("就是你用 Docker 部署的服务端，默认端口 5858。")
+                    Text("就是你用 Docker 部署的服务端：家里局域网填 IP:5858，公网部署填 https://你的域名。")
                 }
                 Section {
                     Picker("", selection: $register) {
@@ -352,9 +372,19 @@ struct AccountSheet: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .textContentType(.username)
-                    SecureField("密码（至少 6 位）", text: $password)
+                    SecureField(register ? "密码（至少 \(passwordMin) 位）" : "密码", text: $password)
                         .accessibilityIdentifier("account.password")
                         .textContentType(.password)  // no associated domain, so iOS can't keep a generated password
+                    if register && info?.registration != "open" {
+                        TextField("注册码", text: $inviteCode)
+                            .accessibilityIdentifier("account.invite")
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                } footer: {
+                    if register && info?.registration != "open" {
+                        Text("向服务器管理员要注册码。刚部署的服务器，第一个账号的注册码在服务器日志里（docker logs nook-server）。")
+                    }
                 }
                 if register, let info, !info.registrationOpen {
                     Text("这台服务器已关闭注册，请使用已有账号登录。").foregroundStyle(.orange).font(.footnote)
@@ -372,7 +402,7 @@ struct AccountSheet: View {
                             Spacer()
                         }
                     }
-                    .disabled(working || server.trimmed.isEmpty || username.trimmed.count < 3 || password.count < 6)
+                    .disabled(!canSubmit)
                     .accessibilityIdentifier("account.submit")
                 }
             }
@@ -409,7 +439,8 @@ struct AccountSheet: View {
         defer { working = false }
         error = nil
         do {
-            let outcome = try await sync.signIn(server: server, username: username, password: password, register: register)
+            let outcome = try await sync.signIn(server: server, username: username, password: password, register: register,
+                                                inviteCode: inviteCode)
             switch outcome {
             case .done: finish()
             case .needsMergeDecision: needsMerge = true
@@ -438,7 +469,7 @@ struct ChangePasswordSheet: View {
         NavigationStack {
             Form {
                 SecureField("原密码", text: $old).textContentType(.password)
-                SecureField("新密码（至少 6 位）", text: $new).textContentType(.newPassword)
+                SecureField("新密码（至少 8 位）", text: $new).textContentType(.newPassword)
                 SecureField("再输入一次", text: $confirm).textContentType(.newPassword)
                 if !confirm.isEmpty && confirm != new { Text("两次输入不一致").foregroundStyle(.orange).font(.footnote) }
                 if let error { Text(error).foregroundStyle(.red).font(.footnote) }
@@ -456,7 +487,7 @@ struct ChangePasswordSheet: View {
                             do { try await sync.changePassword(old: old, new: new); dismiss() } catch { self.error = error.localizedDescription }
                         }
                     }
-                    .disabled(working || old.isEmpty || new.count < 6 || new != confirm)
+                    .disabled(working || old.isEmpty || new.count < 8 || new != confirm)
                 }
             }
         }
@@ -525,17 +556,24 @@ struct HASettingsView: View {
             Section {
                 TextField("http://192.168.1.20:8123", text: $url)
                     .accessibilityIdentifier("ha.url")
+                    .textContentType(.URL)
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                SecureField("长期访问令牌", text: $token)
+                // A plain field: iOS offers to save anything typed into a
+                // SecureField as a website password. The saved token is never
+                // shown again; leaving this empty keeps it.
+                TextField(store.haToken.isEmpty ? "长期访问令牌" : "已保存，粘贴新的可替换", text: $token)
                     .accessibilityIdentifier("ha.token")
+                    .font(.system(.body, design: .monospaced))
+                    .lineLimit(1)
+                    .privacySensitive()
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
             } header: {
                 Text("Home Assistant")
             } footer: {
-                Text("令牌在 HA 网页里生成：左下角头像 › 安全 › 长期访问令牌 › 创建令牌。地址和令牌会随账号同步到你的其他设备。")
+                Text("令牌在 HA 网页里生成：左下角头像 › 安全 › 长期访问令牌 › 创建令牌。地址会随账号同步；令牌只保存在这台设备的钥匙串里，不会上传到服务器，其他设备需各自填写一次。")
             }
             Section {
                 Button {
@@ -547,7 +585,7 @@ struct HASettingsView: View {
                         if testing { ProgressView() }
                     }
                 }
-                .disabled(url.trimmed.isEmpty || token.trimmed.isEmpty || testing)
+                .disabled(url.trimmed.isEmpty || effectiveToken.isEmpty || testing)
                 if let result {
                     Label(result, systemImage: ok ? "checkmark.circle.fill" : "xmark.octagon.fill")
                         .foregroundStyle(ok ? .green : .red)
@@ -560,6 +598,7 @@ struct HASettingsView: View {
                 }
             }
         }
+        .readableWidth()
         .navigationTitle("Home Assistant")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -567,21 +606,20 @@ struct HASettingsView: View {
                 Button("关闭") { dismiss() }
             }
         }
-        .onAppear {
-            url = store.settings.haURL
-            token = store.settings.haToken
-        }
+        .onAppear { url = store.settings.haURL }
         .confirmationDialog("断开后，家具上的设备映射会保留，重新连接即可恢复。", isPresented: $confirmDisconnect, titleVisibility: .visible) {
             Button("断开", role: .destructive) {
                 var s = store.settings
                 s.haURL = ""
-                s.haToken = ""
                 store.saveSettings(s)
+                store.haToken = ""
                 url = ""; token = ""; result = nil
                 Task { await ha.refresh() }
             }
         }
     }
+
+    private var effectiveToken: String { token.trimmed.isEmpty ? store.haToken.trimmed : token.trimmed }
 
     private func test() async {
         guard let base = APIClient.normalize(url) else {
@@ -591,14 +629,16 @@ struct HASettingsView: View {
         }
         testing = true
         defer { testing = false }
-        let client = HAClient(baseURL: base, token: token.trimmed)
+        let newToken = effectiveToken
+        let client = HAClient(baseURL: base, token: newToken)
         do {
             try await client.check()
             let states = try await client.states()
             var s = store.settings
             s.haURL = base.absoluteString
-            s.haToken = token.trimmed
             store.saveSettings(s)
+            store.haToken = newToken
+            token = ""
             ok = true
             result = "连接成功，共 \(states.count) 个实体，已保存"
             await ha.refresh()
@@ -639,6 +679,7 @@ struct RoomsManagerView: View {
             }
             Button { adding = true } label: { Label("添加房间", systemImage: "plus") }
         }
+        .readableWidth()
         .navigationTitle("房间")
         .toolbar { EditButton() }
         .sheet(isPresented: $adding) { RoomEditorSheet(room: nil) }
@@ -682,6 +723,7 @@ struct CategoryManagerView: View {
                 Button("恢复默认分类") { store.seedDefaultCategoriesIfNeeded() }
             }
         }
+        .readableWidth()
         .navigationTitle("物品分类")
         .toolbar { EditButton() }
         .sheet(isPresented: $adding) { CategoryEditorSheet(category: nil) }

@@ -238,17 +238,26 @@ fun AccountDialog(onFinished: () -> Unit = {}, onDismiss: () -> Unit) {
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var register by remember { mutableStateOf(false) }
+    var inviteCode by remember { mutableStateOf("") }
     var working by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var info by remember { mutableStateOf<ServerInfo?>(null) }
     var needsMerge by remember { mutableStateOf(false) }
     fun finish() { onFinished(); onDismiss() }
+    val passwordMin = info?.passwordMin ?: 8
+    val askCode = register && info?.registration != "open"
+    // Accounts made before the 8-character rule can still sign in.
+    val canSubmit = !working && server.isNotBlank() && username.trim().length >= 3 &&
+        (if (register) password.length >= passwordMin else password.isNotEmpty())
 
     EditorDialog("同步账号", { if (!working && !needsMerge) onDismiss() }, onSave = null) {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedTextField(server, { server = it; info = null }, Modifier.fillMaxWidth().testTag("account.server"), label = { Text("服务器地址") },
                 placeholder = { Text("例如 192.168.1.10:5858") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                supportingText = { Text("就是你用 Docker 部署的服务端，默认端口 5858。") })
+                supportingText = { Text("就是你用 Docker 部署的服务端：家里局域网填 IP:5858，公网部署填 https://你的域名。") })
+            if (ApiClient.normalize(server)?.let(ApiClient::isUnencryptedPublic) == true)
+                Text("未加密连接（http）。如果服务器在公网上，密码和数据可能被截获，请改用 https。", color = Color(0xFFF57C00),
+                    style = MaterialTheme.typography.bodySmall)
             info?.let { Text("已连接 ${it.name} ${it.version}" + if (it.features.icons) " · AI 图标可用" else "", color = Color(0xFF2E7D32),
                 style = MaterialTheme.typography.bodySmall) }
                 ?: TextButton({
@@ -262,21 +271,23 @@ fun AccountDialog(onFinished: () -> Unit = {}, onDismiss: () -> Unit) {
                 SegmentedButton(register, { register = true }, SegmentedButtonDefaults.itemShape(1, 2), Modifier.testTag("account.registerTab")) { Text("注册新账号") }
             }
             OutlinedTextField(username, { username = it }, Modifier.fillMaxWidth().testTag("account.username"), label = { Text("用户名") }, singleLine = true)
-            OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth().testTag("account.password"), label = { Text("密码（至少 6 位）") },
+            OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth().testTag("account.password"), label = { Text(if (register) "密码（至少 $passwordMin 位）" else "密码") },
                 singleLine = true, visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+            if (askCode) OutlinedTextField(inviteCode, { inviteCode = it }, Modifier.fillMaxWidth().testTag("account.invite"), label = { Text("注册码") },
+                singleLine = true, supportingText = { Text("向服务器管理员要注册码。刚部署的服务器，第一个账号的注册码在服务器日志里（docker logs nook-server）。") })
             if (register && info?.registrationOpen == false) Text("这台服务器已关闭注册，请使用已有账号登录。", color = Color(0xFFF57C00))
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             Button({
                 scope.launch {
                     working = true; error = null
                     try {
-                        when (sync.signIn(server, username, password, register)) {
+                        when (sync.signIn(server, username, password, register, inviteCode)) {
                             SyncManager.LoginOutcome.Done -> finish()
                             SyncManager.LoginOutcome.NeedsMergeDecision -> needsMerge = true
                         }
                     } catch (e: Exception) { error = e.message } finally { working = false }
                 }
-            }, Modifier.fillMaxWidth().testTag("account.submit"), enabled = !working && server.isNotBlank() && username.trim().length >= 3 && password.length >= 6) {
+            }, Modifier.fillMaxWidth().testTag("account.submit"), enabled = canSubmit) {
                 if (working) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White) else Text(if (register) "注册并登录" else "登录")
             }
         }
@@ -302,9 +313,9 @@ private fun ChangePasswordDialog(onDismiss: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     EditorDialog("修改密码", onDismiss, onSave = {
         scope.launch { try { sync.changePassword(old, new); onDismiss() } catch (e: Exception) { error = e.message } }
-    }, saveEnabled = old.isNotEmpty() && new.length >= 6 && new == confirm) {
+    }, saveEnabled = old.isNotEmpty() && new.length >= 8 && new == confirm) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            listOf(Triple("原密码", old) { v: String -> old = v }, Triple("新密码（至少 6 位）", new) { v: String -> new = v },
+            listOf(Triple("原密码", old) { v: String -> old = v }, Triple("新密码（至少 8 位）", new) { v: String -> new = v },
                 Triple("再输入一次", confirm) { v: String -> confirm = v }).forEach { (label, value, set) ->
                 OutlinedTextField(value, set, Modifier.fillMaxWidth(), label = { Text(label) }, singleLine = true, visualTransformation = PasswordVisualTransformation())
             }
@@ -405,7 +416,7 @@ fun HASettingsScreen() {
     val router = LocalRouter.current
     val scope = rememberCoroutineScope()
     var url by remember { mutableStateOf(store.settings.haURL) }
-    var token by remember { mutableStateOf(store.settings.haToken) }
+    var token by remember { mutableStateOf(store.haToken) }
     var testing by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
     var confirmDisconnect by remember { mutableStateOf(false) }
@@ -415,7 +426,7 @@ fun HASettingsScreen() {
                 placeholder = { Text("http://192.168.1.20:8123") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
             OutlinedTextField(token, { token = it }, Modifier.fillMaxWidth().testTag("ha.token"), label = { Text("长期访问令牌") }, singleLine = true,
                 visualTransformation = PasswordVisualTransformation())
-            Text("令牌在 HA 网页里生成：左下角头像 › 安全 › 长期访问令牌 › 创建令牌。地址和令牌会随账号同步到你的其他设备。",
+            Text("令牌在 HA 网页里生成：左下角头像 › 安全 › 长期访问令牌 › 创建令牌。地址会随账号同步；令牌只加密保存在这台设备上，不会上传到服务器，其他设备需各自填写一次。",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Button({
                 val base = ApiClient.normalize(url)
@@ -426,7 +437,8 @@ fun HASettingsScreen() {
                         val c = HAClient(base, token.trim())
                         c.check()
                         val n = c.states().size
-                        store.saveSettings(store.settings.copy(haURL = base, haToken = token.trim()))
+                        store.saveSettings(store.settings.copy(haURL = base))
+                        store.updateHAToken(token)
                         result = true to "连接成功，共 $n 个实体，已保存"
                         ha.refresh()
                     } catch (e: Exception) {
@@ -447,7 +459,7 @@ fun HASettingsScreen() {
         }
     }
     if (confirmDisconnect) ChoiceDialog("断开 Home Assistant？", "家具上的设备映射会保留，重新连接即可恢复。", listOf(Choice("断开", true) {
-        store.saveSettings(store.settings.copy(haURL = "", haToken = "")); url = ""; token = ""; result = null
+        store.saveSettings(store.settings.copy(haURL = "")); store.updateHAToken(""); url = ""; token = ""; result = null
         scope.launch { ha.refresh() }
     }), onDismiss = { confirmDisconnect = false })
 }

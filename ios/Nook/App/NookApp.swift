@@ -61,6 +61,7 @@ struct NookApp: App {
             }
             Keychain.set(nil, for: "sync.token")
             Keychain.set(nil, for: "ai.apiKey")
+            Keychain.set(nil, for: HomeStore.haTokenAccount)
         }
         let store = HomeStore(directory: uiTesting
             ? FileManager.default.temporaryDirectory.appendingPathComponent("uitest-\(UUID().uuidString)") : nil)

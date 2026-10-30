@@ -26,7 +26,15 @@ open class ApiException(message: String, val status: Int = 0) : IOException(mess
 class UnauthorizedException(message: String) : ApiException(message, 401)
 
 @Serializable
-data class ServerInfo(val name: String = "", val version: String = "", val registrationOpen: Boolean = true, val features: Features = Features()) {
+data class ServerInfo(
+    val name: String = "",
+    val version: String = "",
+    val registrationOpen: Boolean = true,
+    /** "open", "code" (an invite or setup code is needed) or "closed"; null on older servers. */
+    val registration: String? = null,
+    val passwordMin: Int? = null,
+    val features: Features = Features(),
+) {
     @Serializable data class Features(val icons: Boolean = false, val cutout: Boolean = false)
 }
 
@@ -58,6 +66,23 @@ class ApiClient(val baseUrl: String, private val token: String? = null) {
             if (!s.startsWith("http://", true) && !s.startsWith("https://", true)) s = "http://$s"
             s = s.trimEnd('/')
             return s.toHttpUrlOrNull()?.let { s }
+        }
+
+        /** Plain http to something that doesn't look like a home-network address. */
+        fun isUnencryptedPublic(url: String): Boolean {
+            val u = url.toHttpUrlOrNull() ?: return false
+            if (u.scheme != "http") return false
+            val host = u.host.lowercase()
+            if ('.' !in host && ':' !in host) return false  // "nas", "localhost"
+            if (listOf(".local", ".lan", ".home", ".home.arpa", ".internal", ".localhost").any { host.endsWith(it) }) return false
+            val parts = host.split('.').mapNotNull { it.toIntOrNull() }
+            if (parts.size == 4) {
+                val (a, b) = parts
+                return !(a == 10 || a == 127 || (a == 192 && b == 168) || (a == 169 && b == 254) ||
+                    (a == 172 && b in 16..31) || (a == 100 && b in 64..127))  // private, carrier-grade NAT / Tailscale
+            }
+            if (':' in host) return !(host == "::1" || host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80"))
+            return true
         }
     }
 
@@ -117,9 +142,11 @@ class ApiClient(val baseUrl: String, private val token: String? = null) {
 
     suspend fun info(): ServerInfo = call("GET", "api/info", null, ServerInfo.serializer())
 
-    suspend fun login(username: String, password: String, device: String, register: Boolean): AuthResponse =
-        call("POST", if (register) "api/auth/register" else "api/auth/login",
-            body("username" to username, "password" to password, "deviceName" to device), AuthResponse.serializer())
+    suspend fun login(username: String, password: String, device: String, register: Boolean, inviteCode: String = ""): AuthResponse {
+        val fields = listOf("username" to username, "password" to password, "deviceName" to device) +
+            (if (register && inviteCode.isNotBlank()) listOf("inviteCode" to inviteCode.trim()) else emptyList())
+        return call("POST", if (register) "api/auth/register" else "api/auth/login", body(*fields.toTypedArray()), AuthResponse.serializer())
+    }
 
     suspend fun logout() { execute(request("api/auth/logout").post(body()).build()) }
 

@@ -78,12 +78,13 @@ final class SyncManager {
         return try await APIClient(baseURL: url).info()
     }
 
-    func signIn(server raw: String, username: String, password: String, register: Bool) async throws -> LoginOutcome {
+    func signIn(server raw: String, username: String, password: String, register: Bool,
+                inviteCode: String = "") async throws -> LoginOutcome {
         guard let url = APIClient.normalize(raw) else { throw APIError.invalidURL }
         let api = APIClient(baseURL: url)
         let info = try await api.info()
         let auth = try await api.login(username: username.trimmed, password: password,
-                                       device: UIDevice.current.name, register: register)
+                                       device: UIDevice.current.name, register: register, inviteCode: inviteCode)
         serverURL = url.absoluteString
         token = auth.token
         offline = false

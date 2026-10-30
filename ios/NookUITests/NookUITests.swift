@@ -6,12 +6,17 @@ final class NookUITests: XCTestCase {
     private var app: XCUIApplication!
     private let shotDir = ProcessInfo.processInfo.environment["SHOT_DIR"]
     private let server = ProcessInfo.processInfo.environment["NOOK_SERVER"] ?? "127.0.0.1:5858"
+    private let invite = ProcessInfo.processInfo.environment["NOOK_INVITE"] ?? "nook-test-invite"
 
     override func setUp() {
         continueAfterFailure = false
         app = XCUIApplication()
         app.launchArguments = ["-uitest"]
         app.launch()
+        // NOOK_ORIENTATION=landscape runs the same flows sideways (iPad).
+        if ProcessInfo.processInfo.environment["NOOK_ORIENTATION"] == "landscape" {
+            XCUIDevice.shared.orientation = .landscapeLeft
+        }
     }
 
     // MARK: Helpers
@@ -28,6 +33,12 @@ final class NookUITests: XCTestCase {
     }
 
     private func el(_ id: String) -> XCUIElement { app.descendants(matching: .any)[id].firstMatch }
+
+    /// iPhone has a tab bar; iPad shows the tabs as buttons in a floating bar at the top.
+    private func tabButton(_ title: String) -> XCUIElement {
+        let inBar = app.tabBars.buttons[title]
+        return inBar.exists ? inBar : app.buttons[title].firstMatch
+    }
 
     private func labelled(_ text: String) -> XCUIElement {
         app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", text, text)).firstMatch
@@ -46,9 +57,24 @@ final class NookUITests: XCTestCase {
         var scrolls = 0
         while !e.waitForExistence(timeout: scrolls == 0 ? 4 : 1) && scrolls < 8 { app.swipeUp(); scrolls += 1 }
         wait(e, 1, file: file, line: line)
+        // iPad in landscape: the keyboard covers half the screen. Put it away
+        // instead of scrolling the target off the top.
+        if !e.isHittable { dismissKeyboard() }
         var tries = 0
-        while !e.isHittable && tries < 8 { app.swipeUp(); tries += 1 }
+        while !e.isHittable && tries < 8 {
+            if e.exists && e.frame.minY < app.frame.minY + 80 { app.swipeDown() } else { app.swipeUp() }
+            tries += 1
+        }
         e.tap()
+    }
+
+    private func dismissKeyboard() {
+        guard app.keyboards.count > 0 else { return }
+        for name in ["Hide keyboard", "隐藏键盘"] where app.keyboards.buttons[name].exists {
+            app.keyboards.buttons[name].firstMatch.tap()
+            return
+        }
+        app.typeText("\n")
     }
 
     private func type(_ text: String, into e: XCUIElement, replacing: Bool = false) {
@@ -146,7 +172,7 @@ final class NookUITests: XCTestCase {
         XCTAssertTrue(el("furniture.水槽").waitForExistence(timeout: 3), "one sink remains after deleting the copy")
 
         // Master list: add an item with a location, then find it by search
-        tap(app.tabBars.buttons["物品"])
+        tap(tabButton("物品"))
         tap(app.navigationBars.buttons["添加物品"])
         type("螺丝刀", into: wait(el("item.name")))
         tap(el("item.location"))
@@ -164,20 +190,26 @@ final class NookUITests: XCTestCase {
             app.buttons[name].firstMatch.tap()
             break
         }
+        // iPad keeps the search field in the toolbar (and hides the tab bar
+        // while it's focused): clear it and put the keyboard away.
+        let clear = app.searchFields.firstMatch.buttons["清除文本"]
+        if clear.exists { clear.tap() }
+        dismissKeyboard()
 
         // Devices tab without Home Assistant shows the setup path
-        tap(app.tabBars.buttons["设备"])
+        tap(tabButton("设备"))
         wait(app.buttons["开始设置"])
         shot("11-devices")
 
         // Register on the sync server and push everything
         let user = "ui\(Int(Date().timeIntervalSince1970))"
-        tap(app.tabBars.buttons["我的"])
+        tap(tabButton("我的"))
         tap(button(containing: "登录或注册"))
         type(server, into: wait(el("account.server")), replacing: true)
         tap(app.buttons["注册新账号"])
         type(user, into: el("account.username"))
         type("secret123", into: el("account.password"))
+        type(invite, into: el("account.invite"))
         tap(el("account.submit"))
         dismissSavePassword()
         wait(labelled(user), 15)
@@ -195,11 +227,11 @@ final class NookUITests: XCTestCase {
             waitForExpectations(timeout: 5)
         }
         flipOffline()
-        tap(app.tabBars.buttons["物品"])
+        tap(tabButton("物品"))
         tap(app.navigationBars.buttons["添加物品"])
         type("离线时加的电池", into: wait(el("item.name")))
         tap(el("item.save"))
-        tap(app.tabBars.buttons["我的"])
+        tap(tabButton("我的"))
         wait(labelled("已暂停"), 5)
         shot("12b-offline-paused")
         flipOffline()
@@ -217,13 +249,13 @@ final class NookUITests: XCTestCase {
         dismissSavePassword()
         wait(el("room.厨房"), 20)
         dismissSavePassword(timeout: 4)  // it can appear after the sheet closes
-        tap(app.tabBars.buttons["物品"])
+        tap(tabButton("物品"))
         wait(app.staticTexts["螺丝刀"], 10)
         wait(app.staticTexts["离线时加的电池"], 10)
         shot("13-second-device")
 
         // Clean up the test account
-        tap(app.tabBars.buttons["我的"])
+        tap(tabButton("我的"))
         tap(button(containing: "注销账号"))
         type("secret123", into: wait(app.secureTextFields.firstMatch))
         tap(app.buttons["永久注销账号"])
@@ -244,7 +276,7 @@ final class NookUITests: XCTestCase {
         tap(el("wizard.create"))
         wait(el("room.客厅"), 10)
 
-        tap(app.tabBars.buttons["设备"])
+        tap(tabButton("设备"))
         tap(app.buttons["开始设置"])
         type("http://\(ha)", into: wait(el("ha.url")))
         type("test-token", into: el("ha.token"))
@@ -281,7 +313,7 @@ final class NookUITests: XCTestCase {
         XCTAssertTrue(calls?.contains { ($0[0] as? String) == "light" && ($0[1] as? String) == expected } ?? false)
 
         // The sofa glows on the plan and its detail page lists the light.
-        tap(app.tabBars.buttons["家"])
+        tap(tabButton("家"))
         tap(el("room.客厅"))
         wait(el("furniture.沙发"))
         shot("22-ha-room")

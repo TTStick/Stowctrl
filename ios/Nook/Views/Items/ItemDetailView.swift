@@ -98,6 +98,7 @@ struct ItemDetailView: View {
                 Text("添加于 \(item.createdAt.shortDate) · 更新于 \(item.updatedAt.shortDate)")
             }
         }
+        .readableWidth()
         .navigationTitle(item.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

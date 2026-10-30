@@ -308,15 +308,19 @@ struct CustomIcon: Entity {
     }
 }
 
-/// Household-wide settings shared by every device on the account.
+/// Household-wide settings shared by every device on the account. The Home
+/// Assistant token is not among them: it stays on each device (Keychain).
 struct HomeSettings: Entity {
     static let entityName = "settings"
     static let singletonId = UUID(uuidString: "00000000-0000-0000-0000-00000000A001")!
     var id = HomeSettings.singletonId
     var homeName = "我的家"
     var haURL = ""
-    var haToken = ""
     var updatedAt = Date(timeIntervalSince1970: 0)
+    /// Read from older versions, which synced the token; never written.
+    var legacyHAToken = ""
+
+    enum CodingKeys: String, CodingKey { case id, homeName, haURL, haToken, updatedAt }
 
     init() {}
 
@@ -325,8 +329,16 @@ struct HomeSettings: Entity {
         id = HomeSettings.singletonId
         homeName = c.value(.homeName, "我的家")
         haURL = c.value(.haURL, "")
-        haToken = c.value(.haToken, "")
+        legacyHAToken = c.value(.haToken, "")
         updatedAt = c.value(.updatedAt, Date(timeIntervalSince1970: 0))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(homeName, forKey: .homeName)
+        try c.encode(haURL, forKey: .haURL)
+        try c.encode(updatedAt, forKey: .updatedAt)
     }
 }
 

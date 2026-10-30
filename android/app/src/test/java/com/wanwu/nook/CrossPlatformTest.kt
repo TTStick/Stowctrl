@@ -26,6 +26,7 @@ class CrossPlatformTest {
     private val user = System.getenv("XPLAT_USER").orEmpty()
     private val phase = System.getenv("XPLAT_PHASE").orEmpty()
     private val server = System.getenv("NOOK_SERVER") ?: "http://127.0.0.1:5858"
+    private val invite = System.getenv("NOOK_INVITE") ?: "nook-test-invite"
 
     private suspend fun syncAll(store: HomeStore, api: ApiClient) {
         while (true) {
@@ -41,7 +42,7 @@ class CrossPlatformTest {
 
     @Test fun seed() = runBlocking {
         assumeTrue(user.isNotEmpty() && phase == "seed")
-        val auth = ApiClient(server).login(user, "secret123", "android-test", register = true)
+        val auth = ApiClient(server).login(user, "secret123", "android-test", register = true, inviteCode = invite)
         val api = ApiClient(server, auth.token)
         val store = HomeStore(Files.createTempDirectory("xplat").toFile())
         store.buildHome("跨平台之家", listOf(RoomType.kitchen to 1, RoomType.bedroom to 1), withFurniture = true)

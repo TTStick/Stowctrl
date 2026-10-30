@@ -26,7 +26,12 @@ struct ServerInfo: Decodable {
     var name: String
     var version: String
     var registrationOpen: Bool
+    /// "open", "code" (an invite or setup code is needed) or "closed"; nil on older servers.
+    var registration: String?
+    var passwordMin: Int?
     var features: Features
+
+    var needsCode: Bool { registration == "code" }
 }
 
 struct AuthResponse: Decodable {
@@ -59,6 +64,28 @@ struct APIClient {
         while s.hasSuffix("/") { s.removeLast() }
         guard let url = URL(string: s), url.host != nil else { return nil }
         return url
+    }
+
+    /// Plain http to something that doesn't look like a home-network address:
+    /// passwords and data could be read on the way.
+    static func isUnencryptedPublic(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "http", let host = url.host?.lowercased() else { return false }
+        if !host.contains(".") && !host.contains(":") { return false }  // "nas", "localhost"
+        for suffix in [".local", ".lan", ".home", ".home.arpa", ".internal", ".localhost"] where host.hasSuffix(suffix) {
+            return false
+        }
+        let parts = host.split(separator: ".").compactMap { Int($0) }
+        if parts.count == 4 {
+            switch (parts[0], parts[1]) {
+            case (10, _), (127, _), (192, 168), (169, 254): return false
+            case (172, 16...31), (100, 64...127): return false  // private, carrier-grade NAT / Tailscale
+            default: return true
+            }
+        }
+        if host.contains(":") {  // IPv6: loopback, unique-local, link-local
+            return !(host == "::1" || host.hasPrefix("fc") || host.hasPrefix("fd") || host.hasPrefix("fe80"))
+        }
+        return true
     }
 
     private static let session: URLSession = {
@@ -112,10 +139,11 @@ struct APIClient {
 
     func info() async throws -> ServerInfo { try await json("GET", "api/info", timeout: 8) }
 
-    func login(username: String, password: String, device: String, register: Bool) async throws -> AuthResponse {
-        struct Body: Encodable { var username: String; var password: String; var deviceName: String }
+    func login(username: String, password: String, device: String, register: Bool, inviteCode: String = "") async throws -> AuthResponse {
+        struct Body: Encodable { var username: String; var password: String; var deviceName: String; var inviteCode: String? }
         return try await json("POST", register ? "api/auth/register" : "api/auth/login",
-                              body: Body(username: username, password: password, deviceName: device))
+                              body: Body(username: username, password: password, deviceName: device,
+                                         inviteCode: register ? inviteCode.trimmed.nilIfEmpty : nil))
     }
 
     func logout() async throws {

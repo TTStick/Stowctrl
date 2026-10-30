@@ -82,6 +82,7 @@ struct ItemsView: View {
                     sections(items)
                 }
             }
+            .readableWidth(900)
             .searchable(text: $query, prompt: "搜索名称、标签、位置")
             .navigationTitle("物品")
             .toolbar {

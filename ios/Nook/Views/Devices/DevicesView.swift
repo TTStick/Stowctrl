@@ -17,7 +17,9 @@ struct DevicesView: View {
                     ContentUnavailableView {
                         Label("连接 Home Assistant", systemImage: "homekit")
                     } description: {
-                        Text("填写内网 HA 地址和长期访问令牌后，可以把灯、空调、洗衣机等设备映射到家具上，直接在这里控制。")
+                        Text(store.settings.haURL.isEmpty
+                             ? "填写内网 HA 地址和长期访问令牌后，可以把灯、空调、洗衣机等设备映射到家具上，直接在这里控制。"
+                             : "地址已从你的其他设备同步过来。令牌只保存在各自的设备上，在这台设备上填写一次即可。")
                     } actions: {
                         Button("开始设置") { setup = true }.buttonStyle(.borderedProminent)
                     }
@@ -25,6 +27,7 @@ struct DevicesView: View {
                     deviceList
                 }
             }
+            .readableWidth()
             .navigationTitle("设备")
             .toolbar {
                 if ha.isConfigured {

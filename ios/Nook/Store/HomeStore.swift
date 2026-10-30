@@ -29,6 +29,11 @@ final class HomeStore {
     private(set) var categories: [UUID: Category] = [:]
     private(set) var icons: [UUID: CustomIcon] = [:]
     private(set) var settings = HomeSettings()
+    /// This device's Home Assistant token: in the Keychain, never synced or backed up.
+    var haToken = Keychain.get(HomeStore.haTokenAccount) ?? "" {
+        didSet { Keychain.set(haToken.trimmed.nilIfEmpty, for: Self.haTokenAccount) }
+    }
+    static let haTokenAccount = "ha.token"
     private(set) var didOnboard = false
     private(set) var pendingCount = 0
     /// Bumped on every change, local or remote.
@@ -107,6 +112,18 @@ final class HomeStore {
         didOnboard = snap.didOnboard
         pendingUploads = Set(snap.pendingUploads)
         pendingCount = pending.count
+        adoptLegacyHAToken()
+    }
+
+    /// Older versions kept the Home Assistant token in the synced settings.
+    /// Move it into this device's Keychain and re-upload the settings without
+    /// it, which overwrites the copy on the server.
+    private func adoptLegacyHAToken() {
+        guard !settings.legacyHAToken.isEmpty else { return }
+        if haToken.isEmpty { haToken = settings.legacyHAToken }
+        var s = settings
+        s.legacyHAToken = ""
+        saveSettings(s)
     }
 
     private func snapshot() -> Snapshot {
@@ -802,6 +819,7 @@ final class HomeStore {
             if remoteDate > lastTimestamp { lastTimestamp = remoteDate }
             changed = true
         }
+        adoptLegacyHAToken()
         if changed {
             pendingCount = pending.count
             revision += 1
@@ -882,6 +900,7 @@ final class HomeStore {
     func wipeLocal() {
         rooms = [:]; furniture = [:]; compartments = [:]; items = [:]
         categories = [:]; icons = [:]; settings = HomeSettings()
+        haToken = ""
         pending = [:]; tombstones = [:]; pendingUploads = []
         cursor = 0
         didOnboard = false
@@ -906,11 +925,7 @@ final class HomeStore {
         categories.values.forEach(add)
         icons.values.forEach(add)
         items.values.forEach(add)
-        if settings.updatedAt.timeIntervalSince1970 > 0 {
-            var s = settings
-            s.haToken = ""
-            add(s)
-        }
+        if settings.updatedAt.timeIntervalSince1970 > 0 { add(settings) }
         return out
     }
 
@@ -932,7 +947,7 @@ final class HomeStore {
             }
             prune(\.items); prune(\.compartments); prune(\.furniture); prune(\.rooms); prune(\.icons); prune(\.categories)
         }
-        let keptHA = (settings.haURL, settings.haToken)
+        let keptHAURL = settings.haURL
         for ch in changes where !ch.deleted {
             guard let id = UUID(uuidString: ch.id), let data = ch.data else { continue }
             let key = RecordKey(entity: ch.entity, id: id)
@@ -951,11 +966,9 @@ final class HomeStore {
             default: break
             }
         }
-        // Backups carry no Home Assistant token; keep this device's connection.
-        if settings.haToken.isEmpty && !keptHA.1.isEmpty {
-            settings.haURL = keptHA.0
-            settings.haToken = keptHA.1
-        }
+        // A backup without a Home Assistant address keeps this device's.
+        if settings.haURL.isEmpty && !keptHAURL.isEmpty { settings.haURL = keptHAURL }
+        adoptLegacyHAToken()
         if !rooms.isEmpty { didOnboard = true }
         pendingCount = pending.count
         revision += 1

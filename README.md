@@ -50,17 +50,55 @@ Nook/
 
 ## 1. 部署服务端（可选）
 
+两种部署方式，选一种：
+
+**家里局域网（NAS / 家用服务器，推荐）**：只在家里的网络里能访问，出门时客户端自动排队、回家后同步。
+
 ```bash
 cd server
 cp .env.example .env        # 按需修改
 docker compose up -d --build
+docker logs nook-server     # 找到“注册码 XXXX-XXXX-XXXX-XXXX”，注册第一个账号时填
 ```
 
-- 默认端口 **5858**（`.env` 里的 `NOOK_PORT`），数据在 Docker 卷 `nook-data` 里（SQLite 加照片文件）。
-- 第一个账号总是可以注册。注册完自己的账号后，可以把 `NOOK_ALLOW_REGISTRATION` 设成 `false` 关闭注册。
-- **AI 画图标**：在 `.env` 填 `ANTHROPIC_API_KEY`，默认用 `claude-opus-5-5`。走代理或网关时设置 `ANTHROPIC_BASE_URL`；如果网关不支持 beta 请求头，把 `NOOK_ICON_FALLBACKS` 设成 `false`。Key 只放在服务器上，手机里没有。
-- **服务器抠图兜底**（可选）：`.env` 里设 `WITH_CUTOUT=true` 后重新 `docker compose up -d --build`。镜像会大约 400 MB，第一次抠图时会下载模型。
-- 备份：备份 `nook-data` 卷即可。如果从旧备份恢复，客户端会检测到并自动重新上传本机数据。
+客户端里服务器地址填 `NAS的IP:5858`。
+
+**公网（VPS，或者 NAS 做了端口转发）**：自带 Caddy，自动申请 Let's Encrypt 证书，只开放 80/443。Nook 容器本身不暴露任何端口。
+
+```bash
+cd server
+cp .env.example .env        # 必填 NOOK_DOMAIN（解析到这台机器的域名）；要给家人注册就填 NOOK_INVITE_CODE
+docker compose -f docker-compose.public.yml up -d --build
+docker logs nook-server     # 第一个账号的注册码
+```
+
+客户端里服务器地址填 `https://你的域名`。
+
+- 数据在 Docker 卷 `nook-data` 里（SQLite 加照片文件），备份这个卷即可。如果从旧备份恢复，客户端会检测到并自动重新上传本机数据。
+- **注册**：默认谁都不能注册。刚部署的服务器会在日志和 `/data/setup-code` 里给出一次性注册码，用它注册的第一个账号就是主人，之后这个码作废。想让家人也注册，在 `.env` 里设 `NOOK_INVITE_CODE`（至少 8 位），把它告诉家人。`NOOK_ALLOW_REGISTRATION=true` 会让任何人都能注册，不要在公网上用。
+- **AI 画图标**：在 `.env` 填 `ANTHROPIC_API_KEY`，默认用 `claude-opus-5-5`。走代理或网关时设置 `ANTHROPIC_BASE_URL`；如果网关不支持 beta 请求头，把 `NOOK_ICON_FALLBACKS` 设成 `false`。Key 只放在服务器上，手机里没有。每个账号每小时 60 次、全服务器每天 300 次，防止 Key 被刷。
+- **服务器抠图兜底**（可选）：`.env` 里设 `WITH_CUTOUT=true` 后重新构建。镜像会大约 400 MB，第一次抠图时会下载模型。
+- 依赖装的是 `requirements.lock` 里带哈希的固定版本。升级依赖时改 `requirements.txt`，再用 `pip-compile --generate-hashes --allow-unsafe --strip-extras` 重新生成两个 `.lock` 文件。
+
+### 安全加固
+
+服务端按“会被放到公网上”来设计。下面这些默认都开着：
+
+| 风险 | 怎么防 |
+| --- | --- |
+| 新部署被别人抢先注册 | 默认关闭注册；第一个账号要用日志里的一次性注册码；家人用邀请码；账号数量有上限（`NOOK_MAX_USERS`） |
+| 暴力破解、撞库 | 同一 IP 对同一账号失败 5 次锁 15 分钟；同一 IP 失败 20 次（换着用户名试）锁 15 分钟；同一账号每小时最多失败 50 次（分布式爆破）；注册码猜错 10 次锁 1 小时；修改密码和注销账号要重新输入密码，也一样限速。已经登录的设备不受锁定影响 |
+| 通过时间差判断账号是否存在 | 用户名不存在时也做同样的密码哈希；注册时先验注册码，再检查用户名是否被占用 |
+| 伪造 `X-Forwarded-For` 绕过限速 | 只相信 `FORWARDED_ALLOW_IPS` 里的反向代理（公网方案里只有 Caddy 的固定内网 IP）；Caddy 会丢掉客户端自带的这个头 |
+| 明文传输被窃听 | 公网方案强制 HTTPS（`NOOK_REQUIRE_HTTPS`），带 HSTS；客户端填了公网的 `http://` 地址会提醒 |
+| 令牌泄露后长期有效 | 只存令牌的 SHA-256；90 天不用自动失效；每个账号最多 30 个登录设备；改密码会让其他设备全部下线 |
+| 大请求耗尽内存、磁盘 | 每个接口单独限制请求体大小（流式上传也会中途截断）；每个账号默认 4 GB 存储、20 万条记录的配额；scrypt 同时最多 4 个，服务器抠图一次一个，并拒绝超大像素的图片 |
+| 上传伪装文件（HTML 冒充图片等） | 按文件头识别类型，只接收 JPEG / PNG / HEIC / WebP，以识别出的类型保存和返回；响应带 `nosniff` 和 `sandbox` 的 CSP |
+| 信息泄露 | 关闭 `/docs`、`/openapi.json`；不返回 `Server` 头；错误信息里没有内部细节；Caddy 只转发 `/api/*` |
+| 服务器被攻破后的影响 | 容器以非 root 用户运行，根文件系统只读，去掉全部 Linux capabilities，禁止提权，限制进程数和内存；Caddy 管理接口关闭。**Home Assistant 令牌不再上传到服务器**，只保存在各自设备的钥匙串 / Keystore 里，服务器被攻破也拿不到你家的设备控制权 |
+| 审计 | 登录成功和失败、被限速、注册、改密码、注销都会记录用户名和 IP，用 `docker logs nook-server` 查看，也可以接 fail2ban |
+
+部署时你自己还要做的：VPS 上只放行 22/80/443，SSH 用密钥登录；定期 `docker compose pull && docker compose up -d --build` 更新基础镜像；定期备份 `nook-data` 卷。
 
 接口一览：`/api/info`、`/api/auth/{register,login,logout,password}`、`/api/me`、`/api/me/delete`、`/api/sync`、`/api/files/{id}`、`/api/icons/generate`、`/api/cutout`。
 
@@ -74,7 +112,13 @@ xcodegen generate
 open Nook.xcodeproj
 ```
 
-在 Xcode 里选一个模拟器或真机运行。真机需要在 Signing 里选你自己的开发者账号。第一次打开会进入"搭建你的家"；要同步的话，在"我的 › 登录或注册"里填服务器地址（例如 `192.168.1.10:5858`）。
+在 Xcode 里选一个模拟器或真机运行。真机需要在 Signing 里选你自己的开发者账号。第一次打开会进入"搭建你的家"；要同步的话，在"我的 › 登录或注册"里填服务器地址（例如 `192.168.1.10:5858`，公网部署填 `https://你的域名`）。注册新账号时要填注册码（见上面的“注册”）。
+
+同一个 App 同时支持 iPhone 和 iPad。iPhone 固定竖屏；iPad 横竖屏都可以，也支持分屏和侧拉。在 iPad 上，标签栏在顶部，户型图和房间平面图会用满整个屏幕，悬浮的操作面板保持卡片宽度，打开的家具左边是柜子、右边是详情，设置和列表页限制在适合阅读的宽度。
+
+| iPad 横屏：户型图 | 房间编辑 | 打开冰箱 |
+| :---: | :---: | :---: |
+| <img src="docs/screenshots/ipad-03-floorplan.png" width="280"> | <img src="docs/screenshots/ipad-09-room-editing.png" width="280"> | <img src="docs/screenshots/ipad-07-fridge.png" width="280"> |
 
 ## 3. 运行 Android 客户端
 
@@ -89,14 +133,22 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - 正式包：`./gradlew :app:assembleRelease` 会生成**未签名**的 APK（经 R8 压缩后约 58 MB，包含 arm64 和 x86_64 两种架构，其中离线抠图的运行库和 Claude SDK 占了大头）。发布前需要用你自己的签名密钥签名。上架应用商店建议用 AAB，商店会按 CPU 架构拆分，下载体积会更小。
 - 模拟器里访问电脑上的服务端，地址填 `10.0.2.2:5858`；真机填电脑的局域网 IP。
 
-**Home Assistant**：在"设备"页或"我的 › Home Assistant"里，填写 HA 地址（例如 `http://192.168.1.20:8123`）和长期访问令牌。令牌在 HA 网页里生成：头像 › 安全 › 长期访问令牌。地址和令牌会随账号同步到其他设备。
+**Home Assistant**：在"设备"页或"我的 › Home Assistant"里，填写 HA 地址（例如 `http://192.168.1.20:8123`）和长期访问令牌。令牌在 HA 网页里生成：头像 › 安全 › 长期访问令牌。地址会随账号同步；令牌只保存在这台设备上（钥匙串 / Keystore 加密），不会上传到服务器，每台设备各填一次。旧版本同步过的令牌，升级后会自动移到本机，并把服务器上的那份清掉。
 
 ## 4. 测试
 
 ```bash
-# 服务端：账号、同步冲突、分页、文件隔离、AI 图标安全过滤
+# 服务端：账号、同步冲突、分页、文件隔离、AI 图标安全过滤，以及上面的各项加固
 cd server && docker run --rm -v "$PWD":/srv -w /srv python:3.12-slim \
-  sh -c "pip install -q -r requirements.txt -r requirements-dev.txt && python -m pytest -q"
+  sh -c "pip install -q -r requirements.txt -r requirements-dev.txt && python -m pytest -q -p no:cacheprovider"
+```
+
+- 加固相关的测试会单独启动真实的 uvicorn 进程，验证一次性注册码、伪造的 `X-Forwarded-For` 不起作用、HTTPS 强制和 HSTS、配置不安全时拒绝启动。
+- 客户端测试需要服务端允许测试账号注册。用测试用的邀请码 `nook-test-invite` 启动（或用 `NOOK_INVITE` / `TEST_RUNNER_NOOK_INVITE` 改成你自己的）：
+
+```bash
+cd server && printf 'services:\n  nook:\n    environment:\n      NOOK_INVITE_CODE: nook-test-invite\n' > /tmp/nook-test.yml
+docker compose -f docker-compose.yml -f /tmp/nook-test.yml up -d --build
 ```
 
 ```bash

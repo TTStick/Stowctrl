@@ -145,10 +145,9 @@ class HomeAssistantManager(private val store: HomeStore, private val scope: Coro
 
     val client: HAClient?
         get() {
-            val s = store.settings
-            val url = ApiClient.normalize(s.haURL) ?: return null
-            if (s.haToken.isBlank()) return null
-            return HAClient(url, s.haToken.trim())
+            val url = ApiClient.normalize(store.settings.haURL) ?: return null
+            if (store.haToken.isBlank()) return null
+            return HAClient(url, store.haToken)
         }
 
     val isConfigured get() = client != null

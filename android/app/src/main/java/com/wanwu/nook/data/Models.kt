@@ -172,12 +172,15 @@ data class CustomIcon(
     @Serializable(with = Millis::class) val updatedAt: Long = now(),
 )
 
+/** Household-wide settings. The Home Assistant token is not among them: it stays on each device. */
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 @Serializable
 data class HomeSettings(
     @Serializable(with = Uid::class) val id: String = SINGLETON_ID,
     val homeName: String = "我的家",
     val haURL: String = "",
-    val haToken: String = "",
+    /** Only read: older versions synced the token. Always blank, so never written. */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER) val haToken: String = "",
     @Serializable(with = Millis::class) val updatedAt: Long = 0,
 ) {
     companion object { const val SINGLETON_ID = "00000000-0000-0000-0000-00000000A001" }

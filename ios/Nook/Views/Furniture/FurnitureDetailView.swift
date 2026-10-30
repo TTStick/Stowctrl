@@ -9,6 +9,7 @@ struct FurnitureDetailView: View {
     @Environment(HomeAssistantManager.self) private var ha
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var doorsOpen = false
     @State private var addingTo: AddTarget?
     @State private var editing: Furniture?
@@ -34,13 +35,29 @@ struct FurnitureDetailView: View {
     private func content(_ f: Furniture) -> some View {
         let comps = store.compartments(of: f.id)
         return ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                cabinet(f, comps)
-                devicesSection(f)
-                stackSection(f)
-                infoSection(f)
+            if sizeClass == .regular {
+                // iPad: the open cabinet on the left, details beside it.
+                HStack(alignment: .top, spacing: 20) {
+                    cabinet(f, comps).frame(maxWidth: .infinity)
+                    VStack(alignment: .leading, spacing: 18) {
+                        devicesSection(f)
+                        stackSection(f)
+                        infoSection(f)
+                    }
+                    .frame(width: 340)
+                }
+                .frame(maxWidth: 1100)
+                .padding()
+                .frame(maxWidth: .infinity)
+            } else {
+                VStack(alignment: .leading, spacing: 18) {
+                    cabinet(f, comps)
+                    devicesSection(f)
+                    stackSection(f)
+                    infoSection(f)
+                }
+                .padding()
             }
-            .padding()
         }
         .background(Color.canvasBackground)
         .navigationTitle(f.name)

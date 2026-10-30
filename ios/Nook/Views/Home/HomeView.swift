@@ -85,6 +85,7 @@ struct HomeView: View {
                     summaryBar
                 }
             }
+            .floatingPanelWidth()
             .padding(.horizontal)
             .padding(.bottom, 10)
         }
@@ -180,6 +181,7 @@ struct HomeView: View {
             }
         }
         .toolbar { EditButton() }
+        .readableWidth()
     }
 }
 

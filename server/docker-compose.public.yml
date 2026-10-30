@@ -1,0 +1,74 @@
+# Internet-facing deployment (VPS, or a NAS with ports forwarded):
+# Caddy terminates HTTPS with an automatic Let's Encrypt certificate and is
+# the only thing reachable from outside; the Nook container has no published
+# port and only trusts proxy headers from Caddy's fixed address.
+#
+#   cp .env.example .env   # set NOOK_DOMAIN and NOOK_INVITE_CODE
+#   docker compose -f docker-compose.public.yml up -d --build
+services:
+  nook:
+    build:
+      context: .
+      args:
+        WITH_CUTOUT: "${WITH_CUTOUT:-false}"
+    image: nook-server:latest
+    container_name: nook-server
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NOOK_REQUIRE_HTTPS: "true"
+      FORWARDED_ALLOW_IPS: "${NOOK_PROXY_IP:-172.30.58.10}"
+    expose: ["5858"]
+    networks: [nook]
+    volumes:
+      - nook-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 256
+    mem_limit: "${NOOK_MEM_LIMIT:-2g}"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  caddy:
+    image: caddy:2.11-alpine
+    container_name: nook-caddy
+    restart: unless-stopped
+    depends_on: [nook]
+    ports:
+      - "${NOOK_HTTP_PORT:-80}:80"
+      - "${NOOK_HTTPS_PORT:-443}:443"
+      - "${NOOK_HTTPS_PORT:-443}:443/udp"
+    environment:
+      NOOK_DOMAIN: "${NOOK_DOMAIN:?在 .env 里填写 NOOK_DOMAIN（指向这台机器的域名）}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      nook:
+        ipv4_address: "${NOOK_PROXY_IP:-172.30.58.10}"
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+networks:
+  nook:
+    ipam:
+      config:
+        - subnet: "${NOOK_SUBNET:-172.30.58.0/24}"
+
+volumes:
+  nook-data:
+  caddy-data:
+  caddy-config:

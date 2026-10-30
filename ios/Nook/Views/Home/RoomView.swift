@@ -41,6 +41,7 @@ struct RoomView: View {
                            onDropOnto: { moved, target in stackProposal = StackProposal(moved: moved, target: target) })
                     .background(Color.canvasBackground)
                 bottomPanel(room)
+                    .floatingPanelWidth()
                     .padding(.horizontal)
                     .padding(.bottom, 10)
             }
@@ -458,6 +459,7 @@ struct FurnitureListView: View {
                 }
             }
         }
+        .readableWidth()
     }
 
     private func row(_ f: Furniture, depth: Int, count: Int) -> some View {

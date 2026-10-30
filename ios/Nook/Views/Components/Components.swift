@@ -309,4 +309,30 @@ extension View {
         self.padding(padding)
             .background(Color.cardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
+
+    /// Panels floating over a canvas stay card-sized on iPad instead of
+    /// stretching across the whole screen.
+    func floatingPanelWidth() -> some View {
+        frame(maxWidth: 560)
+    }
+
+    /// Full-screen forms and lists keep a comfortable reading width on a big
+    /// iPad screen, while the whole screen still scrolls them. Narrower
+    /// screens (iPhone, Split View) are left exactly as they were.
+    func readableWidth(_ maxWidth: CGFloat = 760) -> some View {
+        modifier(ReadableWidth(maxWidth: maxWidth))
+    }
+}
+
+private struct ReadableWidth: ViewModifier {
+    let maxWidth: CGFloat
+    @State private var width: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        // Extra safe-area padding on top of the list's own margins, so zero
+        // (any narrow screen) changes nothing.
+        content
+            .safeAreaPadding(.horizontal, max(0, (width - maxWidth) / 2))
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+    }
 }

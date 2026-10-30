@@ -1,0 +1,29 @@
+{
+	# Nothing may reconfigure Caddy at runtime.
+	admin off
+	servers {
+		timeouts {
+			read_header 10s
+			read_body 5m
+			write 5m
+			idle 2m
+		}
+	}
+}
+
+{$NOOK_DOMAIN} {
+	encode zstd gzip
+	request_body {
+		max_size 40MB
+	}
+	header -Server
+	header -Via
+
+	# Only the API is served; everything else is a plain 404.
+	handle /api/* {
+		reverse_proxy nook:5858
+	}
+	handle {
+		respond 404
+	}
+}

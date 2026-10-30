@@ -37,6 +37,23 @@ class OfflineTest {
     private fun tempStore() = HomeStore(Files.createTempDirectory("nook").toFile())
     private val photoBytes = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(), 9, 9, 9)
 
+    /** Older versions synced the HA token; it stays on the device and the settings go back without it. */
+    @Test fun legacyHATokenLeavesTheServer() {
+        val store = tempStore()
+        val saved = mutableListOf<String>()
+        store.bindHAToken(null) { saved += it }
+        val legacy = NookJson.parseToJsonElement(
+            """{"id":"00000000-0000-0000-0000-00000000A001","homeName":"旧家","haURL":"http://ha.local:8123","haToken":"old-synced-token","updatedAt":1000}""")
+        store.applyRemote(listOf(com.wanwu.nook.data.SyncChange(Entities.SETTINGS, "00000000-0000-0000-0000-00000000A001", 1000, false, legacy)))
+        assertEquals("old-synced-token", store.haToken)
+        assertEquals(listOf("old-synced-token"), saved)
+        assertEquals("http://ha.local:8123", store.settings.haURL)
+        val out = store.outgoingChanges(10).first { it.change.entity == Entities.SETTINGS }
+        assertTrue("re-uploaded so it overwrites the server's copy", out.change.updatedAt > 1000)
+        assertFalse(out.change.data.toString().contains("old-synced-token"))
+        assertFalse(out.change.data.toString().contains("haToken"))
+    }
+
     private fun sampleHome(store: HomeStore, itemName: String, home: String = "离线之家"): Item {
         store.buildHome(home, listOf(RoomType.kitchen to 1), true)
         val fridge = store.furniture.values.first { it.kind == "fridge" }
@@ -46,7 +63,8 @@ class OfflineTest {
         val icon = CustomIcon(name = "备份图标", svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><circle cx="24" cy="24" r="10" stroke="currentColor" fill="none"/></svg>""")
         store.save(icon)
         store.save(Item(name = itemName, compartmentId = shelf.id, photoId = photo, originalPhotoId = photo, icon = IconRef.custom(icon.id)))
-        store.saveSettings(store.settings.copy(haURL = "http://ha.local:8123", haToken = "secret-ha-token"))
+        store.saveSettings(store.settings.copy(haURL = "http://ha.local:8123"))
+        store.updateHAToken("secret-ha-token")
         return store.items.values.first { it.name == itemName }
     }
 
@@ -69,7 +87,9 @@ class OfflineTest {
         assertArrayEquals(photoBytes, b.files.read(restored.photoId!!))
         assertNotNull(b.icons[restored.icon!!.value])
         assertEquals("离线之家", b.settings.homeName)
-        assertEquals("backups never carry the HA token", "", b.settings.haToken)
+        assertFalse("backups never carry the HA token", bytes.decodeToString(throwOnInvalidSequence = false).contains("secret-ha-token"))
+        assertEquals("", b.haToken)
+        assertEquals("http://ha.local:8123", b.settings.haURL)
         assertTrue(b.didOnboard)
 
         b.save(restored.copy(name = "本机改过的名字"))
